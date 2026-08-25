@@ -8,7 +8,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-**GitHub** · **[Architecture](#architecture)** · **[REST API](#rest-api)** · **[Resume bullets](docs/RESUME_BULLETS.md)**
+**GitHub** · **[Architecture](#architecture)** · **[REST API](#rest-api)**
 
 ---
 
@@ -129,7 +129,6 @@ app/schemas.py        Pydantic request/response models
 app/core/             config, database, security, deps
 app/services/slug.py  Title → unique slug
 tests/                Auth + CRUD + ownership tests
-docs/                 Resume bullets + study notes
 Dockerfile / compose  PostgreSQL deploy
 ```
 
