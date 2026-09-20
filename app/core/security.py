@@ -12,6 +12,7 @@ settings = get_settings()
 
 
 def hash_password(password: str) -> str:
+    # bcrypt truncates past 72 bytes; keep payloads bounded upstream
     return pwd_context.hash(password)
 
 
@@ -21,7 +22,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(subject: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
-    payload = {"sub": subject, "exp": expire}
+    payload = {"sub": subject, "exp": expire, "iat": datetime.now(timezone.utc)}
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 

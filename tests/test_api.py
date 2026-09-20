@@ -1,4 +1,4 @@
-"""API tests for auth, articles, and comments."""
+"""API tests: auth, articles, comments, tags, favorites, pagination."""
 
 from __future__ import annotations
 
@@ -10,15 +10,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-# Force sqlite before app imports settings cache
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["SECRET_KEY"] = "test-secret"
+os.environ["RATE_LIMIT"] = "1000/minute"
+os.environ["AUTO_CREATE_TABLES"] = "true"
 
-from app.core.database import Base, get_db  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from app.main import app  # noqa: E402
+from app.core.database import Base, get_db  # noqa: E402
 
 get_settings.cache_clear()
+
+from app.main import app  # noqa: E402
 
 engine = create_engine(
     "sqlite://",
@@ -46,7 +48,11 @@ def client():
     app.dependency_overrides.clear()
 
 
-def _auth_header(client: TestClient, email: str = "a@example.com", username: str = "alice") -> dict:
+def _auth_header(
+    client: TestClient,
+    email: str = "a@example.com",
+    username: str = "alice",
+) -> dict:
     resp = client.post(
         "/api/users",
         json={"email": email, "username": username, "password": "secret12"},
@@ -59,18 +65,32 @@ def _auth_header(client: TestClient, email: str = "a@example.com", username: str
 def test_health(client: TestClient) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["service"] == "realworld-lite"
+    body = resp.json()
+    assert body["service"] == "realworld-lite"
+    assert body["version"] == "2.0.0"
+    assert "X-Request-ID" in resp.headers
 
 
-def test_register_login_me(client: TestClient) -> None:
+def test_register_login_me_update(client: TestClient) -> None:
     headers = _auth_header(client)
     me = client.get("/api/user", headers=headers)
     assert me.status_code == 200
     assert me.json()["username"] == "alice"
 
-    login = client.post("/api/users/login", json={"email": "a@example.com", "password": "secret12"})
+    login = client.post(
+        "/api/users/login",
+        json={"email": "a@example.com", "password": "secret12"},
+    )
     assert login.status_code == 200
     assert login.json()["access_token"]
+
+    updated = client.put("/api/user", headers=headers, json={"bio": "backend eng"})
+    assert updated.status_code == 200
+    assert updated.json()["bio"] == "backend eng"
+
+    profile = client.get("/api/profiles/alice")
+    assert profile.status_code == 200
+    assert profile.json()["bio"] == "backend eng"
 
 
 def test_duplicate_register(client: TestClient) -> None:
@@ -82,22 +102,44 @@ def test_duplicate_register(client: TestClient) -> None:
     assert again.status_code == 400
 
 
-def test_article_crud_and_ownership(client: TestClient) -> None:
+def test_article_crud_ownership_and_tags(client: TestClient) -> None:
     alice = _auth_header(client, "a@example.com", "alice")
     bob = _auth_header(client, "b@example.com", "bob")
 
     created = client.post(
         "/api/articles",
         headers=alice,
-        json={"title": "Hello World", "description": "desc", "body": "body text"},
+        json={
+            "title": "Hello World",
+            "description": "desc",
+            "body": "body text",
+            "tag_list": ["Python", "fastapi", "python"],
+        },
     )
-    assert created.status_code == 201
-    slug = created.json()["slug"]
+    assert created.status_code == 201, created.text
+    data = created.json()
+    slug = data["slug"]
     assert slug.startswith("hello-world")
+    assert data["tag_list"] == ["fastapi", "python"]
 
     listed = client.get("/api/articles")
     assert listed.status_code == 200
-    assert len(listed.json()) == 1
+    payload = listed.json()
+    assert payload["meta"]["total"] == 1
+    assert len(payload["items"]) == 1
+
+    by_tag = client.get("/api/articles", params={"tag": "python"})
+    assert by_tag.json()["meta"]["total"] == 1
+
+    by_author = client.get("/api/articles", params={"author": "alice"})
+    assert by_author.json()["meta"]["total"] == 1
+
+    search = client.get("/api/articles", params={"q": "body"})
+    assert search.json()["meta"]["total"] == 1
+
+    tags = client.get("/api/tags")
+    assert tags.status_code == 200
+    assert "python" in tags.json()["tags"]
 
     forbidden = client.put(
         f"/api/articles/{slug}",
@@ -109,14 +151,48 @@ def test_article_crud_and_ownership(client: TestClient) -> None:
     updated = client.put(
         f"/api/articles/{slug}",
         headers=alice,
-        json={"title": "Hello Again", "body": "updated"},
+        json={"title": "Hello Again", "body": "updated", "tag_list": ["sql"]},
     )
     assert updated.status_code == 200
     assert updated.json()["title"] == "Hello Again"
+    assert updated.json()["tag_list"] == ["sql"]
+    new_slug = updated.json()["slug"]
 
-    deleted = client.delete(f"/api/articles/{slug}", headers=alice)
+    deleted = client.delete(f"/api/articles/{new_slug}", headers=alice)
     assert deleted.status_code == 204
-    assert client.get(f"/api/articles/{slug}").status_code == 404
+    assert client.get(f"/api/articles/{new_slug}").status_code == 404
+
+
+def test_favorites_and_pagination(client: TestClient) -> None:
+    alice = _auth_header(client, "a@example.com", "alice")
+    bob = _auth_header(client, "b@example.com", "bob")
+
+    for i in range(3):
+        resp = client.post(
+            "/api/articles",
+            headers=alice,
+            json={"title": f"Post {i}", "description": "", "body": f"content {i}", "tag_list": []},
+        )
+        assert resp.status_code == 201
+
+    page1 = client.get("/api/articles", params={"page": 1, "page_size": 2})
+    assert page1.status_code == 200
+    assert page1.json()["meta"]["total"] == 3
+    assert page1.json()["meta"]["page_size"] == 2
+    assert len(page1.json()["items"]) == 2
+
+    slug = page1.json()["items"][0]["slug"]
+    fav = client.post(f"/api/articles/{slug}/favorite", headers=bob)
+    assert fav.status_code == 200
+    assert fav.json()["favorites_count"] == 1
+    assert fav.json()["favorited"] is True
+
+    bob_favs = client.get("/api/articles", params={"favorited": "bob"})
+    assert bob_favs.json()["meta"]["total"] == 1
+
+    unfav = client.delete(f"/api/articles/{slug}/favorite", headers=bob)
+    assert unfav.status_code == 200
+    assert unfav.json()["favorites_count"] == 0
 
 
 def test_comments(client: TestClient) -> None:
@@ -125,7 +201,7 @@ def test_comments(client: TestClient) -> None:
     article = client.post(
         "/api/articles",
         headers=alice,
-        json={"title": "Post", "description": "", "body": "x"},
+        json={"title": "Post", "description": "", "body": "x", "tag_list": []},
     ).json()
     slug = article["slug"]
 
@@ -151,3 +227,12 @@ def test_comments(client: TestClient) -> None:
 def test_unauthenticated_create(client: TestClient) -> None:
     resp = client.post("/api/articles", json={"title": "No Auth", "body": "x"})
     assert resp.status_code == 401
+
+
+def test_invalid_login(client: TestClient) -> None:
+    _auth_header(client)
+    bad = client.post(
+        "/api/users/login",
+        json={"email": "a@example.com", "password": "wrong-password"},
+    )
+    assert bad.status_code == 401

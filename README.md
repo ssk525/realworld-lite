@@ -1,59 +1,76 @@
 # RealWorld Lite
 
-> Scoped RealWorld-style backend: **JWT auth, article CRUD, comments, SQLAlchemy, Pytest, Docker Compose (PostgreSQL)**.
+Scoped **RealWorld-style publishing API** — JWT auth, ownership-checked CRUD, tags, favorites, pagination/search, rate limits, Alembic migrations, and CI.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
+Built as a resume-ready backend for software engineering interviews: clear layers, explicit authorization, and production habits without shipping an entire multi-frontend clone.
+
+[![CI](https://github.com/ssk525/realworld-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/ssk525/realworld-lite/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
 ![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-red)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-**GitHub** · **[Architecture](#architecture)** · **[REST API](#rest-api)**
+**Repo:** https://github.com/ssk525/realworld-lite
 
 ---
 
-## What This Is
+## Why this project exists
 
-A clean **product backend** for campus / SDE screens — not a full RealWorld multi-stack clone:
+Full RealWorld demos try to cover every client stack. Recruiters screening for **backend / full-stack SWE** care more about whether you can:
 
-- User register / login with JWT (Bearer)
-- Articles: create, list, get, update, delete (author-owned)
-- Comments nested under articles (author-owned delete)
-- SQLAlchemy models + PostgreSQL in Docker (SQLite for local/tests)
-- Ownership checks (403 when another user mutates your resource)
-- Automated Pytest coverage for auth + CRUD flows
+1. Model relational data and migrate it safely
+2. Authenticate users and **authorize** mutations (403, not “hope”)
+3. Expose a predictable REST surface (pagination, filters, OpenAPI)
+4. Ship with tests, Docker, and CI
+
+This repo is that subset — intentionally scoped, interview-explainable end to end.
+
+---
+
+## Features
+
+| Area | What shipped |
+|------|----------------|
+| Auth | Register / login / JWT Bearer / profile update |
+| Articles | Create, read, update, delete with **author ownership** |
+| Tags | Many-to-many tags, filter feed by tag |
+| Favorites | Favorite / unfavorite; filter by who favorited |
+| Comments | Nested under articles; author-owned delete |
+| Query API | `page`, `page_size`, `author`, `tag`, `favorited`, `q` |
+| Hardening | Rate limit (SlowAPI), request IDs, bcrypt + JWT expiry |
+| Data | SQLAlchemy 2.x models, **Alembic** migrations |
+| Ops | Pytest, GitHub Actions CI, Docker Compose + Postgres |
 
 ---
 
 ## Architecture
 
 ```
-Client ──JSON/JWT──▶ FastAPI (/api)
-                         │
-                         ├─ Auth (register / login /me)
-                         ├─ Articles CRUD
-                         └─ Comments CRUD
-                         │
-                         ▼
-                   SQLAlchemy ORM
-                         │
-              ┌──────────┴──────────┐
-              │ SQLite (dev/tests)  │
-              │ PostgreSQL (Docker) │
-              └─────────────────────┘
+Client ── JSON + JWT ──▶ FastAPI (/api)
+                           │
+           ┌───────────────┼───────────────┐
+           │               │               │
+        Auth API      Articles API    Comments/Tags
+           │               │               │
+           └─────── services/ (domain) ────┘
+                           │
+                    SQLAlchemy ORM
+                           │
+              ┌────────────┴────────────┐
+              │ SQLite (dev / tests)    │
+              │ PostgreSQL (Compose)    │
+              └────────────┬────────────┘
+                           │
+                     Alembic migrations
 ```
 
-| Layer | Tech | Responsibility |
-|-------|------|----------------|
-| API | FastAPI | Routes, validation, OpenAPI |
-| Auth | JWT + bcrypt | Register, login, protected routes |
-| Domain | SQLAlchemy models | User, Article, Comment |
-| Persist | SQLite / PostgreSQL | Local vs Compose |
-| Quality | Pytest | Auth, ownership, CRUD |
+**Request path:** router → dependency (auth/db) → service helper → model → DB.  
+**Mutations:** load resource → compare `author_id` to `current_user.id` → 403 or proceed.
 
 ---
 
-## Quick Start
+## Quick start
 
 ### Local (SQLite)
 
@@ -65,9 +82,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 python run_api.py
+# optional demo data
+python -m scripts.seed
 ```
 
-Docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- OpenAPI: http://127.0.0.1:8000/docs
+- Health: http://127.0.0.1:8000/health
 
 ### Docker (PostgreSQL)
 
@@ -75,62 +95,97 @@ Docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 docker compose up --build
 ```
 
+API runs migrations on boot, then serves on port `8000`.
+
 ---
 
 ## REST API
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/health` | no | Liveness |
-| POST | `/api/users` | no | Register → token |
-| POST | `/api/users/login` | no | Login → token |
-| GET | `/api/user` | yes | Current user |
-| GET | `/api/articles` | no | List articles |
-| POST | `/api/articles` | yes | Create article |
-| GET | `/api/articles/{slug}` | no | Get article |
-| PUT | `/api/articles/{slug}` | yes (author) | Update |
-| DELETE | `/api/articles/{slug}` | yes (author) | Delete |
-| GET | `/api/articles/{slug}/comments` | no | List comments |
-| POST | `/api/articles/{slug}/comments` | yes | Add comment |
-| DELETE | `/api/articles/{slug}/comments/{id}` | yes (author) | Delete comment |
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| GET | `/health` | — | Liveness + version |
+| POST | `/api/users` | — | Register → token |
+| POST | `/api/users/login` | — | Login → token |
+| GET / PUT | `/api/user` | JWT | Current user |
+| GET | `/api/profiles/{username}` | — | Public profile |
+| GET | `/api/articles` | optional | Paginated list + filters |
+| POST | `/api/articles` | JWT | Create (`tag_list` optional) |
+| GET / PUT / DELETE | `/api/articles/{slug}` | JWT on mutate | Author-only mutate |
+| POST / DELETE | `/api/articles/{slug}/favorite` | JWT | Favorite toggle |
+| GET / POST | `/api/articles/{slug}/comments` | JWT on POST | Comments |
+| DELETE | `/api/articles/{slug}/comments/{id}` | JWT | Comment author only |
+| GET | `/api/tags` | — | All tag names |
 
-### Example flow
+### List query params
+
+`page`, `page_size` (max 100), `author`, `tag`, `favorited` (username), `q` (title/description/body).
+
+Response shape:
+
+```json
+{
+  "items": [ /* ArticleOut */ ],
+  "meta": { "total": 3, "page": 1, "page_size": 20, "pages": 1 }
+}
+```
+
+### Example
 
 ```bash
-# register
-curl -s -X POST http://127.0.0.1:8000/api/users \
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/users \
   -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","username":"you","password":"secret12"}'
+  -d '{"email":"you@example.com","username":"you","password":"secret12"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-# create article (paste token)
 curl -s -X POST http://127.0.0.1:8000/api/articles \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"First Post","description":"demo","body":"hello backend"}'
+  -d '{"title":"First Post","description":"demo","body":"hello","tag_list":["fastapi","sql"]}'
 ```
 
 ---
 
-## Tests
+## Tests & quality
 
 ```bash
 pytest -q
+# or
+make test
+```
+
+CI runs Pytest on Python 3.11/3.12 and applies Alembic migrations against SQLite.
+
+---
+
+## Project layout
+
+```
+app/
+  api/           auth, articles, comments, tags routers
+  core/          config, db, security, deps, middleware, logging
+  models/        User, Article, Comment, Tag + association tables
+  services/      slug, users, articles (domain logic)
+  schemas.py     Pydantic contracts
+  main.py        App factory, CORS, rate limit, lifespan
+alembic/         Schema migrations
+scripts/seed.py  Demo users + articles
+tests/           Auth, ownership, tags, favorites, pagination
+.github/workflows/ci.yml
 ```
 
 ---
 
-## Layout
+## Design decisions (interview talking points)
 
-```
-app/main.py           FastAPI app + lifespan DB init
-app/api/routes.py     Auth, articles, comments
-app/models/           User, Article, Comment
-app/schemas.py        Pydantic request/response models
-app/core/             config, database, security, deps
-app/services/slug.py  Title → unique slug
-tests/                Auth + CRUD + ownership tests
-Dockerfile / compose  PostgreSQL deploy
-```
+1. **Ownership in the API layer** — JWT proves identity; comparing `author_id` proves permission. Missing that check is how “authenticated” apps still leak writes.
+2. **Services over fat routes** — Slug uniqueness, tag normalization, and serialization live in `services/` so routers stay thin and testable.
+3. **Pagination envelope** — Clients need `total`/`pages`, not a bare array, once feeds grow.
+4. **Alembic even with `create_all`** — Local DX stays fast; Compose/CI prove migration-first deploys.
+5. **Scoped RealWorld** — Enough product surface to discuss tradeoffs; not a kitchen-sink clone.
+
+### Resume one-liner
+
+Built a FastAPI publishing API with JWT auth, author-owned CRUD, tags/favorites, pagination & search, Alembic migrations, Pytest, rate limits, and Dockerized PostgreSQL.
 
 ---
 

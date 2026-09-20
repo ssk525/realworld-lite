@@ -4,6 +4,7 @@ from sqlalchemy import DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.associations import favorites
 
 
 class User(Base):
@@ -18,3 +19,8 @@ class User(Base):
 
     articles = relationship("Article", back_populates="author", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="author", cascade="all, delete-orphan")
+    favorite_articles = relationship(
+        "Article",
+        secondary=favorites,
+        back_populates="favorited_by",
+    )

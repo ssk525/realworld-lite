@@ -3,7 +3,6 @@
 .venv/
 venv/
 env/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -15,11 +14,14 @@ build/
 .mypy_cache/
 .coverage
 htmlcov/
-
 # Local DB
 *.db
 data/
-
+alembic_gen.db
+ci.db
+# Local interview study notes (keep off public GitHub if preferred)
+docs/STUDY_GUIDE.md
+docs/INTERVIEW_GUIDE.md
 # IDE / OS
 .vscode/
 .idea/
@@ -27,3 +29,5 @@ data/
 Thumbs.db
 *.log
 logs/
+# Local interview / resume notes (kept off public GitHub)
+docs/RESUME_BULLETS.md

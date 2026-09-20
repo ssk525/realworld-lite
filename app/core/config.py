@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     service_name: str = "realworld-lite"
+    log_level: str = "INFO"
+    rate_limit: str = "60/minute"
+    cors_origins: str = "*"
+    auto_create_tables: bool = True
 
 
 @lru_cache

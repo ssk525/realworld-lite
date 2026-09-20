@@ -22,6 +22,9 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://realworld:realworld@db:5432/realworld
       SECRET_KEY: change-me-in-production
+      RATE_LIMIT: 120/minute
+      LOG_LEVEL: INFO
+      AUTO_CREATE_TABLES: "false"
     depends_on:
       db:
         condition: service_healthy
