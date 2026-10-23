@@ -88,15 +88,26 @@ class ArticleListOut(BaseModel):
 
 class CommentCreate(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
+    parent_id: int | None = None
+
+
+class CommentUpdate(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
 
 
 class CommentOut(BaseModel):
     id: int
     body: str
     author: UserOut
+    parent_id: int | None = None
     created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class CommentThreadOut(CommentOut):
+    replies: list["CommentThreadOut"] = []
 
 
 class TagListOut(BaseModel):

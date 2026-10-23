@@ -36,11 +36,11 @@ This repo is that subset — intentionally scoped, interview-explainable end to 
 | Articles | Create, read, update, delete with **author ownership** |
 | Tags | Many-to-many tags, filter feed by tag |
 | Favorites | Favorite / unfavorite; filter by who favorited |
-| Comments | Nested under articles; author-owned delete |
+| Comments | Create, read, update, delete; threaded replies via `parent_id`; author-only edit/delete |
 | Query API | `page`, `page_size`, `author`, `tag`, `favorited`, `q` |
-| Hardening | Rate limit (SlowAPI), request IDs, bcrypt + JWT expiry |
+| Hardening | Rate limit (SlowAPI, stricter on login), request IDs, bcrypt + JWT expiry |
 | Data | SQLAlchemy 2.x models, **Alembic** migrations |
-| Ops | Pytest, GitHub Actions CI, Docker Compose + Postgres |
+| Ops | Pytest, GitHub Actions CI (Python 3.11/3.12, PostgreSQL 16, Docker), Docker Compose + Postgres |
 
 ---
 
@@ -112,8 +112,9 @@ API runs migrations on boot, then serves on port `8000`.
 | POST | `/api/articles` | JWT | Create (`tag_list` optional) |
 | GET / PUT / DELETE | `/api/articles/{slug}` | JWT on mutate | Author-only mutate |
 | POST / DELETE | `/api/articles/{slug}/favorite` | JWT | Favorite toggle |
-| GET / POST | `/api/articles/{slug}/comments` | JWT on POST | Comments |
-| DELETE | `/api/articles/{slug}/comments/{id}` | JWT | Comment author only |
+| GET / POST | `/api/articles/{slug}/comments` | JWT on POST | Flat list; POST takes optional `parent_id` to reply |
+| GET | `/api/articles/{slug}/comments/thread` | — | Comments as a reply tree |
+| PUT / DELETE | `/api/articles/{slug}/comments/{id}` | JWT | Comment author only; deleting a comment removes its replies |
 | GET | `/api/tags` | — | All tag names |
 
 ### List query params
@@ -153,7 +154,13 @@ pytest -q
 make test
 ```
 
-CI runs Pytest on Python 3.11/3.12 and applies Alembic migrations against SQLite.
+Pytest covers register/login, ownership (403), tags, favorites, pagination, comment edit and threaded replies, the login rate limit (429), and token expiry (401).
+
+CI has three jobs:
+
+1. **test** — Pytest on Python 3.11 and 3.12, then Alembic upgrade on SQLite.
+2. **postgres** — Alembic upgrade, downgrade, upgrade on a PostgreSQL 16 service, then a smoke test (register, create article, filter by tag) against it.
+3. **docker** — builds the image and runs `docker compose up` until `/health` answers.
 
 ---
 
@@ -185,7 +192,7 @@ tests/           Auth, ownership, tags, favorites, pagination
 
 ### Resume one-liner
 
-Built a FastAPI publishing API with JWT auth, author-owned CRUD, tags/favorites, pagination & search, Alembic migrations, Pytest, rate limits, and Dockerized PostgreSQL.
+Built a FastAPI publishing API with JWT auth, author-owned article and comment CRUD, threaded replies, tags/favorites, pagination & search, Alembic migrations, Pytest, rate limits, GitHub Actions CI, and Dockerized PostgreSQL.
 
 ---
 

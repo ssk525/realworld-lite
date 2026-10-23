@@ -1,10 +1,12 @@
 """Auth routes: register, login, profile."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password
 from app.models.user import User
 from app.schemas import TokenOut, UserCreate, UserLogin, UserOut, UserUpdate
@@ -29,7 +31,8 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> TokenOut:
 
 
 @router.post("/users/login", response_model=TokenOut)
-def login(payload: UserLogin, db: Session = Depends(get_db)) -> TokenOut:
+@limiter.limit(get_settings().auth_rate_limit)
+def login(request: Request, payload: UserLogin, db: Session = Depends(get_db)) -> TokenOut:
     user = user_service.authenticate(db, payload.email, payload.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")

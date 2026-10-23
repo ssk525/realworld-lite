@@ -13,13 +13,19 @@ from sqlalchemy.pool import StaticPool
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["SECRET_KEY"] = "test-secret"
 os.environ["RATE_LIMIT"] = "1000/minute"
+os.environ["AUTH_RATE_LIMIT"] = "5/minute"
 os.environ["AUTO_CREATE_TABLES"] = "true"
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from jose import jwt  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import Base, get_db  # noqa: E402
 
 get_settings.cache_clear()
 
+from app.core.rate_limit import limiter  # noqa: E402
 from app.main import app  # noqa: E402
 
 engine = create_engine(
@@ -34,6 +40,7 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 def client():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    limiter.reset()
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -67,7 +74,7 @@ def test_health(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["service"] == "realworld-lite"
-    assert body["version"] == "2.0.0"
+    assert body["version"] == "2.1.0"
     assert "X-Request-ID" in resp.headers
 
 
@@ -222,6 +229,103 @@ def test_comments(client: TestClient) -> None:
 
     ok = client.delete(f"/api/articles/{slug}/comments/{cid}", headers=bob)
     assert ok.status_code == 204
+
+
+def _article(client: TestClient, headers: dict, title: str = "Post") -> str:
+    resp = client.post(
+        "/api/articles",
+        headers=headers,
+        json={"title": title, "description": "", "body": "x", "tag_list": []},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["slug"]
+
+
+def test_comment_update_is_author_only(client: TestClient) -> None:
+    alice = _auth_header(client, "a@example.com", "alice")
+    bob = _auth_header(client, "b@example.com", "bob")
+    slug = _article(client, alice)
+    cid = client.post(
+        f"/api/articles/{slug}/comments", headers=bob, json={"body": "first"}
+    ).json()["id"]
+
+    deny = client.put(f"/api/articles/{slug}/comments/{cid}", headers=alice, json={"body": "hacked"})
+    assert deny.status_code == 403
+
+    ok = client.put(f"/api/articles/{slug}/comments/{cid}", headers=bob, json={"body": "edited"})
+    assert ok.status_code == 200
+    assert ok.json()["body"] == "edited"
+    assert ok.json()["updated_at"] is not None
+
+    missing = client.put(f"/api/articles/{slug}/comments/9999", headers=bob, json={"body": "x"})
+    assert missing.status_code == 404
+
+
+def test_nested_replies_thread_and_cascade(client: TestClient) -> None:
+    alice = _auth_header(client, "a@example.com", "alice")
+    bob = _auth_header(client, "b@example.com", "bob")
+    slug = _article(client, alice)
+    root = client.post(
+        f"/api/articles/{slug}/comments", headers=bob, json={"body": "root"}
+    ).json()["id"]
+    reply = client.post(
+        f"/api/articles/{slug}/comments",
+        headers=alice,
+        json={"body": "reply", "parent_id": root},
+    )
+    assert reply.status_code == 201
+    assert reply.json()["parent_id"] == root
+    reply_id = reply.json()["id"]
+    client.post(
+        f"/api/articles/{slug}/comments",
+        headers=bob,
+        json={"body": "reply to reply", "parent_id": reply_id},
+    )
+
+    thread = client.get(f"/api/articles/{slug}/comments/thread").json()
+    assert len(thread) == 1
+    assert thread[0]["body"] == "root"
+    assert thread[0]["replies"][0]["body"] == "reply"
+    assert thread[0]["replies"][0]["replies"][0]["body"] == "reply to reply"
+
+    other_slug = _article(client, alice, "Other")
+    cross = client.post(
+        f"/api/articles/{other_slug}/comments",
+        headers=alice,
+        json={"body": "wrong article", "parent_id": root},
+    )
+    assert cross.status_code == 400
+
+    assert client.delete(f"/api/articles/{slug}/comments/{root}", headers=bob).status_code == 204
+    assert client.get(f"/api/articles/{slug}/comments").json() == []
+
+
+def test_login_rate_limit_returns_429(client: TestClient) -> None:
+    _auth_header(client)
+    body = {"email": "a@example.com", "password": "wrong-password"}
+    codes = [client.post("/api/users/login", json=body).status_code for _ in range(6)]
+    assert codes[:5] == [401] * 5
+    assert codes[5] == 429
+
+
+def test_expired_token_is_rejected(client: TestClient) -> None:
+    _auth_header(client)
+    settings = get_settings()
+    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    token = jwt.encode(
+        {"sub": "a@example.com", "exp": past, "iat": past - timedelta(minutes=60)},
+        settings.secret_key,
+        algorithm=settings.algorithm,
+    )
+    resp = client.get("/api/user", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_token_expires_after_configured_minutes(client: TestClient) -> None:
+    headers = _auth_header(client)
+    token = headers["Authorization"].split()[1]
+    claims = jwt.get_unverified_claims(token)
+    assert claims["exp"] - claims["iat"] == get_settings().access_token_expire_minutes * 60
 
 
 def test_unauthenticated_create(client: TestClient) -> None:
